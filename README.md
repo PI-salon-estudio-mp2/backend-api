@@ -8,11 +8,9 @@ API principal del **Salón de Estudio Colaborativo en Tiempo Real** (Mini-proyec
 
 | Recurso | URL |
 |---|---|
-| API (Render) | https://TU-URL.onrender.com |
-| Swagger | https://TU-URL.onrender.com/docs |
-| Health check | https://TU-URL.onrender.com/health |
-
-> El plan gratuito de Render duerme el servicio tras 15 minutos sin tráfico. La primera petición puede tardar cerca de un minuto.
+| API (Render) | https://backend-api-7xa7.onrender.com/ |
+| Swagger | https://backend-api-7xa7.onrender.com/docs/ |
+| Health check | https://backend-api-7xa7.onrender.com/health/ |
 
 ## Tecnologías
 
@@ -39,7 +37,7 @@ Flujo de una petición: `routes → controllers → services → repositories �
 ## Requisitos
 
 - Node.js 20 o superior
-- Docker (opcional, para ejecutar con contenedor)
+- Docker
 - Un proyecto de Firebase con Firestore y una cuenta de servicio
 
 ## Configuración
@@ -65,8 +63,6 @@ Flujo de una petición: `routes → controllers → services → repositories �
 | `FIREBASE_PROJECT_ID` | Sí | ID del proyecto de Firebase |
 | `FIREBASE_CLIENT_EMAIL` | Sí | `client_email` de la cuenta de servicio |
 | `FIREBASE_PRIVATE_KEY` | Sí | `private_key` de la cuenta de servicio, con los `\n` literales |
-
-Nunca subas `.env` ni el JSON de la cuenta de servicio al repositorio.
 
 ## Ejecución
 
