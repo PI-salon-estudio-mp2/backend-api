@@ -50,7 +50,9 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   }
 
   try {
-    const decoded = await auth.verifyIdToken(token);
+    // checkRevoked = true: además de la firma, comprueba que la cuenta siga existiendo.
+    // Así un token emitido antes de eliminar la cuenta (US-05) ya no sirve para nada.
+    const decoded = await auth.verifyIdToken(token, true);
     req.usuario = {
       uid: decoded.uid,
       correo: decoded.email ?? "",
