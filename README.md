@@ -7,6 +7,10 @@ API principal del **Salón de Estudio Colaborativo en Tiempo Real** (Mini-proyec
 - TS-01: Firebase Authentication (correo y Google), verificación del ID token en cada petición privada y perfiles en Firestore.
 - US-01, US-02 y US-03: registro manual, registro con Google con nombre de usuario obligatorio y perfil de quien inició sesión.
 
+**Sprint 2:**
+- US-04: editar el perfil validando en el servidor que el nombre de usuario y el correo no estén repetidos.
+- Protección 403: nadie puede ver ni modificar el perfil de otro usuario.
+
 ## Producción
 
 | Recurso | URL |
@@ -104,6 +108,8 @@ La documentación interactiva está en `/docs` (Swagger). Las rutas privadas usa
 | GET | `/api/users/username-disponible?username=` | No | Indica si un nombre de usuario está libre |
 | GET | `/api/users/me` | **Sí** | Perfil de quien inició sesión (US-03) |
 | POST | `/api/users/me/username` | **Sí** | Elige el username tras entrar con Google y crea el perfil (US-02) |
+| PATCH | `/api/users/me` | **Sí** | Edita nombres, apellidos, avatar, username y/o correo (US-04) |
+| GET / PATCH | `/api/users/{uid}` | **Sí** | Igual que `/me`, pero si el uid no es el propio responde 403 |
 
 ### Sesión (rutas privadas)
 
@@ -136,6 +142,23 @@ Después, el frontend inicia sesión con Firebase usando el mismo correo y contr
 ### Registro con Google (US-02)
 
 El usuario entra con Google en el frontend. `GET /api/users/me` responde **404 `PROFILE_INCOMPLETE`** hasta que elige su username con `POST /api/users/me/username` (`{ "username": "..." }`). Nombres, apellidos, correo y foto se toman de las claims del token verificado (`name`, `email`, `picture`). El cliente solo envía el username. Se puede hacer una sola vez (si no, 409 `PROFILE_EXISTS`).
+
+### Editar perfil (US-04)
+
+`PATCH /api/users/me` recibe solo los campos que cambian (al menos uno):
+
+```json
+{ "nombres": "Daniel Andrés", "username": "daniel_mg2", "avatar": "morado", "correo": "daniel.nuevo@correo.com" }
+```
+
+Pasos en el servidor:
+1. Valida el formato de los campos que llegaron y devuelve todos los errores juntos en `fields`.
+2. **Username:** revisión rápida y luego, en **una transacción**, reserva `usernames/{nuevo}` y borra `usernames/{anterior}`. Si otra persona lo tiene: 409 `USERNAME_TAKEN`.
+3. **Correo** (solo cuentas con correo y contraseña): se cambia en Firebase Authentication, donde es único. Si ya existe: 409 `EMAIL_TAKEN`. En cuentas de Google responde 400, porque ese correo se administra en Google.
+4. Si Firestore falla después de cambiar el correo, se restaura el correo anterior en Authentication.
+5. Responde 200 con el perfil completo actualizado.
+
+Después de cambiar el correo, el frontend debe refrescar el token (`getIdToken(true)`) para que traiga el correo nuevo.
 
 ### Validaciones (las mismas del frontend)
 
@@ -173,8 +196,9 @@ Error (`fields` solo en errores de formulario):
 
 | HTTP | `code` | Cuándo ocurre |
 |---|---|---|
-| 400 | `VALIDATION_ERROR` | Faltan datos, tienen un formato inválido o el JSON está mal formado |
+| 400 | `VALIDATION_ERROR` | Faltan datos, tienen un formato inválido, no se envió ningún cambio o el JSON está mal formado |
 | 401 | `UNAUTHORIZED` | Ruta privada sin token, con token inválido o expirado |
+| 403 | `FORBIDDEN` | Se intenta ver o modificar el perfil de otro usuario |
 | 404 | `NOT_FOUND` | El documento `config/base-tecnica` no existe |
 | 404 | `PROFILE_INCOMPLETE` | La cuenta (Google) aún no eligió nombre de usuario |
 | 404 | `ROUTE_NOT_FOUND` | La ruta solicitada no existe |
@@ -200,7 +224,7 @@ El servicio corre en **Render** como Web Service con Docker, desplegado desde la
 
 ## Flujo de trabajo
 
-- Una rama por historia, por ejemplo `feature/TS-01-auth-api`.
+- Una rama por historia, por ejemplo `feature/US-04-editar-perfil`.
 - Commits que nombran la historia: `feat: verificar el token de Firebase (TS-01)`.
 - Un pull request por historia, con descripción y capturas. Nada se programa directo en `main`.
 - Si se usa IA, se declara en la descripción del PR.
