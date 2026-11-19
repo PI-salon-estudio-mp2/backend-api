@@ -45,7 +45,7 @@ const perfilIncompleto = () =>
   );
 
 /** Ejecuta una operación de Firestore y convierte cualquier fallo en 503 DB_UNAVAILABLE. */
-async function enBaseDeDatos<T>(operacion: string, fn: () => Promise<T>): Promise<T> {
+export async function enBaseDeDatos<T>(operacion: string, fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (error) {

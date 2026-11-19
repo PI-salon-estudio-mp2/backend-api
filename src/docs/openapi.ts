@@ -50,6 +50,59 @@ const perfilEjemplo = {
   correo: "daniel@correo.com",
 };
 
+const salaEjemplo = {
+  id: "K7P2QX9M",
+  nombre: "Cálculo II · parcial 2",
+  anfitrionUid: "Xy12AbC34dEf56",
+  creadoEn: "2026-11-18T21:30:00.000Z",
+  rol: "anfitrion",
+};
+
+const errorSala = {
+  "400": {
+    description: "El ID no tiene el formato válido (8 caracteres: letras y números)",
+    content: json(
+      errorEjemplo("VALIDATION_ERROR", "El ID de la sala tiene 8 caracteres: letras y números, sin espacios.", {
+        id: "El ID de la sala tiene 8 caracteres: letras y números, sin espacios.",
+      }),
+      "#/components/schemas/Error"
+    ),
+  },
+  "403": {
+    description: "Quien llama no es el anfitrión de la sala: no se modifica nada",
+    content: json(
+      errorEjemplo("FORBIDDEN", "Solo el anfitrión puede modificar o eliminar esta sala."),
+      "#/components/schemas/Error"
+    ),
+  },
+  "404": {
+    description: "No existe una sala con ese ID",
+    content: json(
+      errorEjemplo("ROOM_NOT_FOUND", "No encontramos una sala con ese ID. Revísalo e inténtalo de nuevo."),
+      "#/components/schemas/Error"
+    ),
+  },
+};
+
+const errorNombreSala = {
+  description: "Nombre vacío o de más de 50 caracteres",
+  content: json(
+    errorEjemplo("VALIDATION_ERROR", "Revisa los datos del formulario e inténtalo de nuevo.", {
+      nombre: "Escribe un nombre para la sala.",
+    }),
+    "#/components/schemas/Error"
+  ),
+};
+
+const parametroIdSala = {
+  name: "id",
+  in: "path",
+  required: true,
+  schema: { type: "string", pattern: "^[A-HJKMNP-Z2-9]{8}$" },
+  example: "K7P2QX9M",
+  description: "ID de la sala. Se recortan los espacios y se pasa a mayúsculas",
+};
+
 const usernameOcupado = errorEjemplo(
   "USERNAME_TAKEN",
   "Ese nombre de usuario ya está ocupado. Prueba con otro.",
@@ -78,6 +131,11 @@ export const openapiSpec = {
     { name: "Base técnica", description: "TS-00 (Sprint 0)" },
     { name: "Autenticación", description: "TS-01 · US-01 (Sprint 1)" },
     { name: "Usuarios", description: "TS-01 · US-02 · US-03 (Sprint 1) · US-04 (Sprint 2)" },
+    {
+      name: "Salas",
+      description:
+        "US-06 · TS-02 (Sprint 2). El ID de la sala es único: 8 caracteres en mayúsculas y números, sin 0, O, 1, I ni L.",
+    },
   ],
   components: {
     securitySchemes: {
@@ -157,6 +215,34 @@ export const openapiSpec = {
             description:
               "Único. Solo en cuentas con correo y contraseña (en Google responde 400). Tras cambiarlo, el frontend debe refrescar el token",
             example: "daniel.nuevo@correo.com",
+          },
+        },
+      },
+      Sala: {
+        type: "object",
+        required: ["id", "nombre", "anfitrionUid", "creadoEn", "rol"],
+        properties: {
+          id: { type: "string", example: "K7P2QX9M", description: "Único. Es también el ID del documento en `rooms`" },
+          nombre: { type: "string", maxLength: 50 },
+          anfitrionUid: { type: "string", description: "uid de quien creó la sala (administrador)" },
+          creadoEn: { type: "string", format: "date-time" },
+          rol: {
+            type: "string",
+            enum: ["anfitrion", "invitado"],
+            description: "Rol de quien hace la petición en esta sala",
+          },
+        },
+      },
+      SalaEntrada: {
+        type: "object",
+        required: ["nombre"],
+        properties: {
+          nombre: {
+            type: "string",
+            minLength: 1,
+            maxLength: 50,
+            description: "Se recortan los espacios del inicio y del final y se unen los repetidos",
+            example: "Cálculo II · parcial 2",
           },
         },
       },
@@ -513,6 +599,114 @@ export const openapiSpec = {
               },
             },
           },
+          "503": R.error503,
+        },
+      },
+    },
+    "/api/rooms": {
+      post: {
+        summary: "Crear sala con ID único (US-06)",
+        description:
+          "Genera un ID único de 8 caracteres (el documento `rooms/{id}` se crea con `create()`, que falla si ya existe, y se reintenta con otro ID). Quien la crea queda como anfitrión y primer miembro. Después, el frontend redirige a `/salas/{id}`.",
+        tags: ["Salas"],
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: { "application/json": { schema: { $ref: "#/components/schemas/SalaEntrada" } } },
+        },
+        responses: {
+          "201": { description: "Sala creada", content: json({ data: salaEjemplo }) },
+          "400": errorNombreSala,
+          "401": R.error401,
+          "404": {
+            description: "La cuenta aún no tiene perfil (Google sin username)",
+            content: json(
+              errorEjemplo("PROFILE_INCOMPLETE", "Falta elegir tu nombre de usuario para terminar de crear la cuenta."),
+              "#/components/schemas/Error"
+            ),
+          },
+          "503": R.error503,
+        },
+      },
+      get: {
+        summary: "Listar mis salas (US-06)",
+        description:
+          "Devuelve SOLO las salas que creó quien inició sesión, de la más nueva a la más vieja. Si no tiene salas responde una lista vacía (el panel muestra el mensaje amigable).",
+        tags: ["Salas"],
+        security: [{ bearerAuth: [] }],
+        responses: {
+          "200": {
+            description: "Salas del usuario (puede ser [])",
+            content: {
+              "application/json": {
+                examples: {
+                  conSalas: {
+                    value: {
+                      data: [
+                        salaEjemplo,
+                        { ...salaEjemplo, id: "B4WZ8HNT", nombre: "Física I", creadoEn: "2026-11-17T15:02:11.000Z" },
+                      ],
+                    },
+                  },
+                  vacio: { value: { data: [] } },
+                },
+              },
+            },
+          },
+          "401": R.error401,
+          "503": R.error503,
+        },
+      },
+    },
+    "/api/rooms/{id}": {
+      parameters: [parametroIdSala],
+      get: {
+        summary: "Ver una sala por su ID",
+        description:
+          "Para entrar a la sala. Cualquier usuario con sesión que tenga el ID puede verla; `rol` indica si es anfitrión o invitado.",
+        tags: ["Salas"],
+        security: [{ bearerAuth: [] }],
+        responses: {
+          "200": { description: "Datos de la sala", content: json({ data: salaEjemplo }) },
+          "400": errorSala["400"],
+          "401": R.error401,
+          "404": errorSala["404"],
+          "503": R.error503,
+        },
+      },
+      patch: {
+        summary: "Cambiar el nombre de la sala (solo anfitrión)",
+        description: "Si quien llama no es el anfitrión responde 403 FORBIDDEN y no se modifica nada.",
+        tags: ["Salas"],
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: { "application/json": { schema: { $ref: "#/components/schemas/SalaEntrada" } } },
+        },
+        responses: {
+          "200": {
+            description: "Sala actualizada",
+            content: json({ data: { ...salaEjemplo, nombre: "Cálculo II · final" } }),
+          },
+          "400": errorNombreSala,
+          "401": R.error401,
+          "403": errorSala["403"],
+          "404": errorSala["404"],
+          "503": R.error503,
+        },
+      },
+      delete: {
+        summary: "Eliminar la sala y sus mensajes (solo anfitrión)",
+        description:
+          "Borra `rooms/{id}` y toda su subcolección `messages` (sin datos huérfanos). Si quien llama no es el anfitrión responde 403 FORBIDDEN y no se borra nada.",
+        tags: ["Salas"],
+        security: [{ bearerAuth: [] }],
+        responses: {
+          "204": { description: "Sala eliminada (sin cuerpo)" },
+          "400": errorSala["400"],
+          "401": R.error401,
+          "403": errorSala["403"],
+          "404": errorSala["404"],
           "503": R.error503,
         },
       },
