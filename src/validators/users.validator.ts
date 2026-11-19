@@ -32,6 +32,9 @@ export const MENSAJES = {
   contrasenaDebil: `La contraseña no cumple la política. ${POLITICA_CONTRASENA}`,
   avatarVacio: "Elige una foto de perfil.",
   avatarInvalido: "Elige una de las fotos de perfil disponibles.",
+  sinCambios: "Envía al menos un dato para actualizar: nombres, apellidos, username, avatar o correo.",
+  correoGoogle:
+    "El correo de una cuenta de Google no se puede cambiar aquí: se administra desde tu cuenta de Google.",
 } as const;
 
 export interface DatosRegistro {
@@ -135,4 +138,62 @@ export function validarUsername(body: unknown): string {
   const mensaje = errorDeUsername(username);
   lanzarSiHayErrores(mensaje ? { username: mensaje } : {});
   return username;
+}
+
+/** Datos que se pueden cambiar en «Mi perfil» (US-04). Solo trae los campos que llegaron. */
+export interface CambiosPerfil {
+  nombres?: string;
+  apellidos?: string;
+  username?: string;
+  avatar?: string;
+  correo?: string;
+}
+
+/**
+ * Valida el cuerpo de PATCH /api/users/me (US-04).
+ * Solo se validan los campos que se envían; los demás quedan como están.
+ * `avatarActual` permite conservar la foto de Google (URL https), que no está en la lista de avatares.
+ * Lanza 400 VALIDATION_ERROR con todos los campos que fallaron, o si no llegó ningún dato editable.
+ */
+export function validarEdicionPerfil(body: unknown, avatarActual: string): CambiosPerfil {
+  const c = comoObjeto(body);
+  const cambios: CambiosPerfil = {};
+  const fields: Campos = {};
+
+  if ("nombres" in c) {
+    const valor = texto(c.nombres).trim();
+    const mensaje = errorDeNombre(valor, MENSAJES.nombresVacio, "nombres");
+    if (mensaje) fields.nombres = mensaje;
+    else cambios.nombres = valor;
+  }
+  if ("apellidos" in c) {
+    const valor = texto(c.apellidos).trim();
+    const mensaje = errorDeNombre(valor, MENSAJES.apellidosVacio, "apellidos");
+    if (mensaje) fields.apellidos = mensaje;
+    else cambios.apellidos = valor;
+  }
+  if ("username" in c) {
+    const valor = normalizarUsername(c.username);
+    const mensaje = errorDeUsername(valor);
+    if (mensaje) fields.username = mensaje;
+    else cambios.username = valor;
+  }
+  if ("avatar" in c) {
+    const valor = texto(c.avatar).trim();
+    const mensaje = valor === avatarActual && valor ? undefined : errorDeAvatar(valor);
+    if (mensaje) fields.avatar = mensaje;
+    else cambios.avatar = valor;
+  }
+  if ("correo" in c) {
+    const valor = texto(c.correo).trim().toLowerCase();
+    const mensaje = errorDeCorreo(valor);
+    if (mensaje) fields.correo = mensaje;
+    else cambios.correo = valor;
+  }
+
+  lanzarSiHayErrores(fields);
+  if (Object.keys(cambios).length === 0) {
+    throw new AppError(400, MENSAJES.sinCambios, "VALIDATION_ERROR");
+  }
+  return cambios;
 }

@@ -3,6 +3,7 @@ import { usuarioDe } from "../middlewares/auth.middleware";
 import {
   completarPerfilConUsername,
   consultarUsername,
+  editarPerfil,
   obtenerPerfil,
 } from "../services/users.service";
 
@@ -25,4 +26,10 @@ export async function miPerfilHandler(req: Request, res: Response) {
 export async function elegirUsernameHandler(req: Request, res: Response) {
   const data = await completarPerfilConUsername(usuarioDe(req), req.body);
   res.status(201).json({ data });
+}
+
+/** PATCH /api/users/me (privado, US-04) */
+export async function editarPerfilHandler(req: Request, res: Response) {
+  const data = await editarPerfil(usuarioDe(req), req.body);
+  res.json({ data });
 }
