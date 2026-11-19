@@ -4,6 +4,7 @@ import {
   completarPerfilConUsername,
   consultarUsername,
   editarPerfil,
+  eliminarCuenta,
   obtenerPerfil,
 } from "../services/users.service";
 
@@ -31,5 +32,11 @@ export async function elegirUsernameHandler(req: Request, res: Response) {
 /** PATCH /api/users/me (privado, US-04) */
 export async function editarPerfilHandler(req: Request, res: Response) {
   const data = await editarPerfil(usuarioDe(req), req.body);
+  res.json({ data });
+}
+
+/** DELETE /api/users/me (privado, US-05). Después el frontend cierra la sesión y va al Login. */
+export async function eliminarCuentaHandler(req: Request, res: Response) {
+  const data = await eliminarCuenta(usuarioDe(req).uid);
   res.json({ data });
 }

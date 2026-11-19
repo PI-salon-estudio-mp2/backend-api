@@ -103,6 +103,14 @@ const parametroIdSala = {
   description: "ID de la sala. Se recortan los espacios y se pasa a mayúsculas",
 };
 
+const resumenEliminacion = {
+  uid: "Xy12AbC34dEf56",
+  usernameLiberado: "daniel_mg",
+  salasEliminadas: 2,
+  salasAbandonadas: 1,
+  mensajesAnonimizados: 7,
+};
+
 const usernameOcupado = errorEjemplo(
   "USERNAME_TAKEN",
   "Ese nombre de usuario ya está ocupado. Prueba con otro.",
@@ -118,6 +126,7 @@ export const openapiSpec = {
       "backend-api — Sprint 0 (TS-00), Sprint 1 (TS-01, US-01, US-02, US-03) y Sprint 2 (US-04, US-05, US-06).",
       "",
       "**Rutas privadas:** envían el ID token de Firebase en `Authorization: Bearer <token>`.",
+      "Si la cuenta fue eliminada, su token deja de servir (401).",
       "Para probarlas aquí: inicia sesión en la aplicación publicada, abre DevTools → Red,",
       "selecciona la petición a `/api/users/me`, copia el valor del encabezado `Authorization`",
       "sin la palabra `Bearer` y pégalo en **Authorize**. El token dura 1 hora.",
@@ -130,7 +139,7 @@ export const openapiSpec = {
     { name: "Sistema" },
     { name: "Base técnica", description: "TS-00 (Sprint 0)" },
     { name: "Autenticación", description: "TS-01 · US-01 (Sprint 1)" },
-    { name: "Usuarios", description: "TS-01 · US-02 · US-03 (Sprint 1) · US-04 (Sprint 2)" },
+    { name: "Usuarios", description: "TS-01 · US-02 · US-03 (Sprint 1) · US-04 · US-05 (Sprint 2)" },
     {
       name: "Salas",
       description:
@@ -512,6 +521,34 @@ export const openapiSpec = {
           "503": R.error503,
         },
       },
+      delete: {
+        summary: "Eliminar mi cuenta (US-05)",
+        description: [
+          "Borra la cuenta definitivamente aplicando la **política de datos** del equipo:",
+          "1) las salas que creó el usuario se borran con todos sus mensajes;",
+          "2) en salas de otros, sale de `miembros` y sus mensajes quedan como «Usuario eliminado» (sin uid);",
+          "3) se borra `users/{uid}` y se libera `usernames/{username}` en una transacción;",
+          "4) se borra la cuenta de Firebase Authentication.",
+          "Firestore va primero: si algo falla, la cuenta sigue existiendo y se puede reintentar.",
+          "Después, el frontend cierra la sesión (`signOut`) y redirige al Login. El token anterior deja de servir (401).",
+        ].join(" "),
+        tags: ["Usuarios"],
+        security: [{ bearerAuth: [] }],
+        responses: {
+          "200": { description: "Cuenta eliminada; resumen de lo que se hizo", content: json({ data: resumenEliminacion }) },
+          "401": R.error401,
+          "503": {
+            description: "Firestore o Authentication no respondieron (se puede reintentar)",
+            content: json(
+              errorEjemplo(
+                "AUTH_UNAVAILABLE",
+                "Borramos tus datos, pero no pudimos cerrar tu cuenta. Inténtalo de nuevo en unos segundos."
+              ),
+              "#/components/schemas/Error"
+            ),
+          },
+        },
+      },
     },
     "/api/users/{uid}": {
       parameters: [
@@ -548,6 +585,18 @@ export const openapiSpec = {
         },
         responses: {
           "200": { description: "Perfil actualizado", content: json({ data: perfilEjemplo }) },
+          "401": R.error401,
+          "403": R.error403,
+        },
+      },
+      delete: {
+        summary: "Eliminar cuenta por uid (solo la propia)",
+        description:
+          "Igual que DELETE /api/users/me. Si el uid no es el del token, responde 403 FORBIDDEN y no se borra nada.",
+        tags: ["Usuarios"],
+        security: [{ bearerAuth: [] }],
+        responses: {
+          "200": { description: "Cuenta eliminada", content: json({ data: resumenEliminacion }) },
           "401": R.error401,
           "403": R.error403,
         },

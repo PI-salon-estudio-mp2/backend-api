@@ -9,6 +9,7 @@ API principal del **Salón de Estudio Colaborativo en Tiempo Real** (Mini-proyec
 
 **Sprint 2:**
 - US-04: editar el perfil validando en el servidor que el nombre de usuario y el correo no estén repetidos.
+- US-05: eliminar la cuenta (Firestore y Firebase Authentication), liberar el username y aplicar la política de datos a salas y mensajes.
 - US-06: crear salas con ID único y listar solo las salas del usuario.
 - Protección 403: nadie puede ver ni modificar el perfil de otro usuario, ni modificar o eliminar una sala que no creó.
 
@@ -110,7 +111,8 @@ La documentación interactiva está en `/docs` (Swagger). Las rutas privadas usa
 | GET | `/api/users/me` | **Sí** | Perfil de quien inició sesión (US-03) |
 | POST | `/api/users/me/username` | **Sí** | Elige el username tras entrar con Google y crea el perfil (US-02) |
 | PATCH | `/api/users/me` | **Sí** | Edita nombres, apellidos, avatar, username y/o correo (US-04) |
-| GET / PATCH | `/api/users/{uid}` | **Sí** | Igual que `/me`, pero si el uid no es el propio responde 403 |
+| DELETE | `/api/users/me` | **Sí** | Elimina la cuenta y aplica la política de datos (US-05) |
+| GET / PATCH / DELETE | `/api/users/{uid}` | **Sí** | Igual que `/me`, pero si el uid no es el propio responde 403 |
 | POST | `/api/rooms` | **Sí** | Crea una sala con ID único; quien la crea es el anfitrión (US-06) |
 | GET | `/api/rooms` | **Sí** | Lista solo las salas que creó el usuario (US-06) |
 | GET | `/api/rooms/{id}` | **Sí** | Datos de una sala y el rol de quien pregunta (`anfitrion` o `invitado`) |
@@ -119,7 +121,7 @@ La documentación interactiva está en `/docs` (Swagger). Las rutas privadas usa
 
 ### Sesión (rutas privadas)
 
-El frontend envía `Authorization: Bearer <ID token de Firebase>`. El middleware `requireAuth` lo verifica con `verifyIdToken` del Admin SDK. Si falta, es inválido o expiró, responde **401 `UNAUTHORIZED`**. Las respuestas privadas llevan `Cache-Control: no-store`.
+El frontend envía `Authorization: Bearer <ID token de Firebase>`. El middleware `requireAuth` lo verifica con `verifyIdToken(token, true)` del Admin SDK (también rechaza tokens de cuentas eliminadas o revocadas). Si falta, es inválido o expiró, responde **401 `UNAUTHORIZED`**. Las respuestas privadas llevan `Cache-Control: no-store`.
 
 ### Registro manual (US-01)
 
@@ -165,6 +167,21 @@ Pasos en el servidor:
 5. Responde 200 con el perfil completo actualizado.
 
 Después de cambiar el correo, el frontend debe refrescar el token (`getIdToken(true)`) para que traiga el correo nuevo.
+
+### Eliminar cuenta (US-05) · política de datos
+
+`DELETE /api/users/me` borra la cuenta definitivamente, en este orden:
+
+| Paso | Qué se hace | Por qué |
+|---|---|---|
+| 1 | Las salas que creó el usuario se borran con todos sus mensajes (`recursiveDelete`) | Sin anfitrión la sala no tiene quién la administre |
+| 2 | En salas de otros: sale de `miembros` y sus mensajes quedan como «Usuario eliminado» (`autorUid: null`) | Se conserva la conversación de los demás sin datos personales del usuario |
+| 3 | Se borra `users/{uid}` y se libera `usernames/{username}` en una transacción | Otra persona puede usar ese username de inmediato |
+| 4 | Se borra la cuenta de Firebase Authentication | Ya no puede iniciar sesión |
+
+Firestore va primero: si algo falla, la cuenta sigue existiendo y el usuario puede reintentar (todos los pasos se pueden repetir). Así no quedan datos huérfanos. Responde 200 con un resumen (`salasEliminadas`, `salasAbandonadas`, `mensajesAnonimizados`, `usernameLiberado`). Después el frontend cierra la sesión y lleva al Login.
+
+`requireAuth` verifica el token con `checkRevoked`: el token de una cuenta eliminada responde 401 aunque no haya expirado.
 
 ### Salas (US-06)
 

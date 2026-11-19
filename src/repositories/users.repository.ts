@@ -134,3 +134,28 @@ export async function actualizarPerfil(
     return { resultado: "actualizado", perfil: { ...actual, ...cambios } };
   });
 }
+
+/**
+ * US-05 · Borra el perfil y libera el nombre de usuario en UNA transacción.
+ * Solo borra `usernames/{username}` si de verdad pertenece a este uid.
+ * Devuelve el username liberado (o null si no tenía perfil).
+ */
+export async function borrarPerfilYUsername(uid: string): Promise<string | null> {
+  const refUsuario = usuarios().doc(uid);
+  return db.runTransaction(async (tx): Promise<string | null> => {
+    const snapUsuario = await tx.get(refUsuario);
+    if (!snapUsuario.exists) return null;
+    const username = texto(snapUsuario.get("username"));
+
+    let liberar = false;
+    const refUsername = username ? usernames().doc(username) : null;
+    if (refUsername) {
+      const snapUsername = await tx.get(refUsername);
+      liberar = snapUsername.exists && snapUsername.get("uid") === uid;
+    }
+
+    if (refUsername && liberar) tx.delete(refUsername);
+    tx.delete(refUsuario);
+    return username || null;
+  });
+}
