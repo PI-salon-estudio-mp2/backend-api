@@ -9,7 +9,8 @@ API principal del **Salón de Estudio Colaborativo en Tiempo Real** (Mini-proyec
 
 **Sprint 2:**
 - US-04: editar el perfil validando en el servidor que el nombre de usuario y el correo no estén repetidos.
-- Protección 403: nadie puede ver ni modificar el perfil de otro usuario.
+- US-06: crear salas con ID único y listar solo las salas del usuario.
+- Protección 403: nadie puede ver ni modificar el perfil de otro usuario, ni modificar o eliminar una sala que no creó.
 
 ## Producción
 
@@ -110,6 +111,11 @@ La documentación interactiva está en `/docs` (Swagger). Las rutas privadas usa
 | POST | `/api/users/me/username` | **Sí** | Elige el username tras entrar con Google y crea el perfil (US-02) |
 | PATCH | `/api/users/me` | **Sí** | Edita nombres, apellidos, avatar, username y/o correo (US-04) |
 | GET / PATCH | `/api/users/{uid}` | **Sí** | Igual que `/me`, pero si el uid no es el propio responde 403 |
+| POST | `/api/rooms` | **Sí** | Crea una sala con ID único; quien la crea es el anfitrión (US-06) |
+| GET | `/api/rooms` | **Sí** | Lista solo las salas que creó el usuario (US-06) |
+| GET | `/api/rooms/{id}` | **Sí** | Datos de una sala y el rol de quien pregunta (`anfitrion` o `invitado`) |
+| PATCH | `/api/rooms/{id}` | **Sí** | Cambia el nombre; solo el anfitrión (si no, 403) |
+| DELETE | `/api/rooms/{id}` | **Sí** | Borra la sala y sus mensajes; solo el anfitrión (si no, 403) |
 
 ### Sesión (rutas privadas)
 
@@ -160,6 +166,14 @@ Pasos en el servidor:
 
 Después de cambiar el correo, el frontend debe refrescar el token (`getIdToken(true)`) para que traiga el correo nuevo.
 
+### Salas (US-06)
+
+- **ID único:** 8 caracteres con letras mayúsculas y números, sin los que se confunden (0, O, 1, I, L). Ejemplo: `K7P2QX9M`. El ID es también el ID del documento `rooms/{id}`; se crea con `create()`, que falla si ya existe, y en ese caso se genera otro.
+- **Nombre:** obligatorio, máximo 50 caracteres. Se recortan los espacios del inicio y del final y se unen los repetidos.
+- **Panel:** `GET /api/rooms` devuelve solo las salas donde `anfitrionUid` es quien inició sesión. Si no tiene, devuelve `[]`.
+- **Permisos:** cambiar el nombre o borrar la sala solo lo puede hacer el anfitrión. Cualquier otro usuario recibe 403 `FORBIDDEN` y no se modifica nada.
+- Al borrar una sala se borran también todos sus mensajes (`rooms/{id}/messages`).
+
 ### Validaciones (las mismas del frontend)
 
 | Campo | Regla |
@@ -176,6 +190,8 @@ Después de cambiar el correo, el frontend debe refrescar el token (`getIdToken(
 |---|---|---|
 | `users` | `{uid}` | `uid, nombres, apellidos, username, avatar, correo, proveedor ("password" \| "google"), creadoEn, actualizadoEn` |
 | `usernames` | `{username}` | `uid, creadoEn`. Su existencia reserva el nombre de usuario |
+| `rooms` | `{id}` | `id, nombre, anfitrionUid, miembros (uids), creadoEn, actualizadoEn` |
+| `rooms/{id}/messages` | `{msgId}` | `autorUid, autorUsername, texto, creadoEn`. Los escribe `backend-realtime` |
 | `config` | `base-tecnica` | `mensaje` (TS-00) |
 
 Las reglas de [`firestore.rules`](firestore.rules) niegan todo acceso desde clientes. El Admin SDK de esta API no está sujeto a ellas.
@@ -198,9 +214,10 @@ Error (`fields` solo en errores de formulario):
 |---|---|---|
 | 400 | `VALIDATION_ERROR` | Faltan datos, tienen un formato inválido, no se envió ningún cambio o el JSON está mal formado |
 | 401 | `UNAUTHORIZED` | Ruta privada sin token, con token inválido o expirado |
-| 403 | `FORBIDDEN` | Se intenta ver o modificar el perfil de otro usuario |
+| 403 | `FORBIDDEN` | Se intenta ver o modificar el perfil de otro usuario, o modificar o borrar una sala ajena |
 | 404 | `NOT_FOUND` | El documento `config/base-tecnica` no existe |
 | 404 | `PROFILE_INCOMPLETE` | La cuenta (Google) aún no eligió nombre de usuario |
+| 404 | `ROOM_NOT_FOUND` | No existe una sala con ese ID |
 | 404 | `ROUTE_NOT_FOUND` | La ruta solicitada no existe |
 | 409 | `USERNAME_TAKEN` | El nombre de usuario ya está ocupado |
 | 409 | `EMAIL_TAKEN` | El correo ya tiene una cuenta |
