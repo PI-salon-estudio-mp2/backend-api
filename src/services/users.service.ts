@@ -1,10 +1,11 @@
 import { auth } from "../config/firebase";
 import type { UsuarioAutenticado } from "../middlewares/auth.middleware";
 import {
+  borrarSolicitudesDe,
   eliminarSala,
   idsSalasDe,
   idsSalasDondeEsInvitado,
-  sacarDeSalaYAnonimizar,
+  sacarDeSalaYBorrarMensajes,
 } from "../repositories/rooms.repository";
 import {
   actualizarPerfil,
@@ -292,22 +293,24 @@ export async function editarPerfil(usuario: UsuarioAutenticado, body: unknown): 
 }
 
 export interface ResumenEliminacion {
-  uid: string;
-  usernameLiberado: string | null;
   salasEliminadas: number;
   salasAbandonadas: number;
-  mensajesAnonimizados: number;
+  mensajesEliminados: number;
 }
 
 /**
- * US-05 · Eliminar cuenta. Política de datos acordada por el equipo:
- * 1) Las salas que creó el usuario se borran con TODOS sus mensajes.
- * 2) En salas de otros: sale de `miembros` y sus mensajes quedan como «Usuario eliminado».
- * 3) Se borra su perfil (`users/{uid}`) y se libera su username (`usernames/{username}`).
- * 4) Por último se borra la cuenta de Firebase Authentication.
- * Firestore va primero: si algo falla, la cuenta sigue existiendo y el usuario puede
- * reintentar (todos los pasos se pueden repetir sin problema). Así nunca quedan datos
- * huérfanos de una cuenta que ya no existe.
+ * US-05 · Eliminar cuenta. Política de datos confirmada por el equipo
+ * (la misma que anuncia el modal del frontend):
+ * 1) Las salas que creó el usuario se borran con TODO su contenido (mensajes de todos).
+ * 2) En salas de otros: se borran SUS mensajes y sale de `miembros`; la sala y los
+ *    mensajes de las demás personas se conservan.
+ * 3) Se borran sus registros de `roomCreationRequests`.
+ * 4) Se borra su perfil (`users/{uid}`) y se libera su username (`usernames/{username}`),
+ *    comprobando que pertenece a este uid.
+ * 5) Por último se borra la cuenta de Firebase Authentication.
+ * Firestore va primero y cada paso se puede repetir: si algo falla, la cuenta sigue
+ * existiendo, el usuario puede reintentar y la operación continúa donde quedó.
+ * Así nunca quedan datos huérfanos de una cuenta que ya no existe.
  */
 export async function eliminarCuenta(uid: string): Promise<ResumenEliminacion> {
   const propias = await enBaseDeDatos("buscar salas propias", () => idsSalasDe(uid));
@@ -316,37 +319,32 @@ export async function eliminarCuenta(uid: string): Promise<ResumenEliminacion> {
   }
 
   const ajenas = await enBaseDeDatos("buscar salas como invitado", () => idsSalasDondeEsInvitado(uid));
-  let mensajesAnonimizados = 0;
+  let mensajesEliminados = 0;
   for (const salaId of ajenas) {
-    mensajesAnonimizados += await enBaseDeDatos("anonimizar mensajes", () =>
-      sacarDeSalaYAnonimizar(salaId, uid)
+    mensajesEliminados += await enBaseDeDatos("borrar mensajes en sala ajena", () =>
+      sacarDeSalaYBorrarMensajes(salaId, uid)
     );
   }
 
-  const usernameLiberado = await enBaseDeDatos("borrar perfil", () => borrarPerfilYUsername(uid));
+  await enBaseDeDatos("borrar solicitudes de salas", () => borrarSolicitudesDe(uid));
+  await enBaseDeDatos("borrar perfil", () => borrarPerfilYUsername(uid));
 
   try {
     await auth.deleteUser(uid);
   } catch (error) {
     // Si la cuenta ya no existía en Authentication, el resultado es el mismo.
     if (codigoFirebase(error) !== "auth/user-not-found") {
-      console.error(`No se pudo borrar la cuenta ${uid} de Firebase Authentication:`, error);
+      console.error("No se pudo borrar la cuenta de Firebase Authentication:", error);
       throw new AppError(
         503,
-        "Borramos tus datos, pero no pudimos cerrar tu cuenta. Inténtalo de nuevo en unos segundos.",
+        "No pudimos terminar de eliminar tu cuenta. Inténtalo de nuevo en unos segundos.",
         "AUTH_UNAVAILABLE"
       );
     }
   }
 
   console.log(
-    `Cuenta eliminada (US-05): ${propias.length} salas borradas, ${ajenas.length} salas abandonadas, ${mensajesAnonimizados} mensajes anonimizados`
+    `Cuenta eliminada (US-05): ${propias.length} salas borradas, ${ajenas.length} salas abandonadas, ${mensajesEliminados} mensajes borrados en salas ajenas`
   );
-  return {
-    uid,
-    usernameLiberado,
-    salasEliminadas: propias.length,
-    salasAbandonadas: ajenas.length,
-    mensajesAnonimizados,
-  };
+  return { salasEliminadas: propias.length, salasAbandonadas: ajenas.length, mensajesEliminados };
 }

@@ -55,7 +55,7 @@ const salaEjemplo = {
   nombre: "Cálculo II · parcial 2",
   anfitrionUid: "Xy12AbC34dEf56",
   creadoEn: "2026-11-18T21:30:00.000Z",
-  rol: "anfitrion",
+  rol: "administrador",
 };
 
 const errorSala = {
@@ -78,17 +78,17 @@ const errorSala = {
   "404": {
     description: "No existe una sala con ese ID",
     content: json(
-      errorEjemplo("ROOM_NOT_FOUND", "No encontramos una sala con ese ID. Revísalo e inténtalo de nuevo."),
+      errorEjemplo("ROOM_NOT_FOUND", "La sala no existe o no está en tu panel."),
       "#/components/schemas/Error"
     ),
   },
 };
 
 const errorNombreSala = {
-  description: "Nombre vacío o de más de 50 caracteres",
+  description: "Nombre vacío, de menos de 3 o de más de 40 caracteres, o solicitudId inválido",
   content: json(
     errorEjemplo("VALIDATION_ERROR", "Revisa los datos del formulario e inténtalo de nuevo.", {
-      nombre: "Escribe un nombre para la sala.",
+      nombre: "Escribe un nombre de entre 3 y 40 caracteres.",
     }),
     "#/components/schemas/Error"
   ),
@@ -101,14 +101,6 @@ const parametroIdSala = {
   schema: { type: "string", pattern: "^[A-HJKMNP-Z2-9]{8}$" },
   example: "K7P2QX9M",
   description: "ID de la sala. Se recortan los espacios y se pasa a mayúsculas",
-};
-
-const resumenEliminacion = {
-  uid: "Xy12AbC34dEf56",
-  usernameLiberado: "daniel_mg",
-  salasEliminadas: 2,
-  salasAbandonadas: 1,
-  mensajesAnonimizados: 7,
 };
 
 const usernameOcupado = errorEjemplo(
@@ -215,7 +207,7 @@ export const openapiSpec = {
           avatar: {
             type: "string",
             description:
-              "azul, verde, ocre, morado, turquesa o rosado. En cuentas de Google también se acepta la foto actual",
+              "azul, verde, ocre, morado, turquesa, rosado o \"\" (avatar por defecto con iniciales). En cuentas de Google también se acepta la foto actual",
             example: "morado",
           },
           correo: {
@@ -232,27 +224,41 @@ export const openapiSpec = {
         required: ["id", "nombre", "anfitrionUid", "creadoEn", "rol"],
         properties: {
           id: { type: "string", example: "K7P2QX9M", description: "Único. Es también el ID del documento en `rooms`" },
-          nombre: { type: "string", maxLength: 50 },
+          nombre: { type: "string", minLength: 3, maxLength: 40 },
           anfitrionUid: { type: "string", description: "uid de quien creó la sala (administrador)" },
           creadoEn: { type: "string", format: "date-time" },
           rol: {
             type: "string",
-            enum: ["anfitrion", "invitado"],
-            description: "Rol de quien hace la petición en esta sala",
+            enum: ["administrador"],
+            description: "En el panel siempre es «administrador»: solo se listan y se ven las salas propias",
           },
         },
       },
       SalaEntrada: {
         type: "object",
-        required: ["nombre"],
+        required: ["nombre", "solicitudId"],
         properties: {
           nombre: {
             type: "string",
-            minLength: 1,
-            maxLength: 50,
+            minLength: 3,
+            maxLength: 40,
             description: "Se recortan los espacios del inicio y del final y se unen los repetidos",
             example: "Cálculo II · parcial 2",
           },
+          solicitudId: {
+            type: "string",
+            format: "uuid",
+            description:
+              "UUID del intento de creación (crypto.randomUUID()). Si se reintenta la misma solicitud, se devuelve la misma sala en vez de crear otra",
+            example: "3f2b8c1e-7a4d-4e9b-9c2f-1d5e6a7b8c9d",
+          },
+        },
+      },
+      SalaRenombrar: {
+        type: "object",
+        required: ["nombre"],
+        properties: {
+          nombre: { type: "string", minLength: 3, maxLength: 40, example: "Cálculo II · final" },
         },
       },
       UsernameEntrada: {
@@ -526,23 +532,25 @@ export const openapiSpec = {
         description: [
           "Borra la cuenta definitivamente aplicando la **política de datos** del equipo:",
           "1) las salas que creó el usuario se borran con todos sus mensajes;",
-          "2) en salas de otros, sale de `miembros` y sus mensajes quedan como «Usuario eliminado» (sin uid);",
-          "3) se borra `users/{uid}` y se libera `usernames/{username}` en una transacción;",
-          "4) se borra la cuenta de Firebase Authentication.",
+          "2) en salas de otros se borran SUS mensajes y sale de `miembros` (la sala y los mensajes de los demás se conservan);",
+          "3) se borran sus registros de `roomCreationRequests`;",
+          "4) se borra `users/{uid}` y se libera `usernames/{username}` en una transacción;",
+          "5) se borra la cuenta de Firebase Authentication.",
+          "Responde 204 sin cuerpo solo cuando terminó todo.",
           "Firestore va primero: si algo falla, la cuenta sigue existiendo y se puede reintentar.",
           "Después, el frontend cierra la sesión (`signOut`) y redirige al Login. El token anterior deja de servir (401).",
         ].join(" "),
         tags: ["Usuarios"],
         security: [{ bearerAuth: [] }],
         responses: {
-          "200": { description: "Cuenta eliminada; resumen de lo que se hizo", content: json({ data: resumenEliminacion }) },
+          "204": { description: "Cuenta eliminada por completo (sin cuerpo)" },
           "401": R.error401,
           "503": {
             description: "Firestore o Authentication no respondieron (se puede reintentar)",
             content: json(
               errorEjemplo(
                 "AUTH_UNAVAILABLE",
-                "Borramos tus datos, pero no pudimos cerrar tu cuenta. Inténtalo de nuevo en unos segundos."
+                "No pudimos terminar de eliminar tu cuenta. Inténtalo de nuevo en unos segundos."
               ),
               "#/components/schemas/Error"
             ),
@@ -596,7 +604,7 @@ export const openapiSpec = {
         tags: ["Usuarios"],
         security: [{ bearerAuth: [] }],
         responses: {
-          "200": { description: "Cuenta eliminada", content: json({ data: resumenEliminacion }) },
+          "204": { description: "Cuenta eliminada por completo (sin cuerpo)" },
           "401": R.error401,
           "403": R.error403,
         },
@@ -656,7 +664,7 @@ export const openapiSpec = {
       post: {
         summary: "Crear sala con ID único (US-06)",
         description:
-          "Genera un ID único de 8 caracteres (el documento `rooms/{id}` se crea con `create()`, que falla si ya existe, y se reintenta con otro ID). Quien la crea queda como anfitrión y primer miembro. Después, el frontend redirige a `/salas/{id}`.",
+          "Genera un ID único de 8 caracteres: en una transacción se comprueba que `rooms/{id}` no exista y, si existe, se prueba con otro. Quien la crea queda como administrador (anfitrión) y primer miembro. Es idempotente por `solicitudId` (se guarda en `roomCreationRequests`): un reintento de la misma solicitud responde 200 con la misma sala. Después, el frontend redirige a `/salas/{id}`.",
         tags: ["Salas"],
         security: [{ bearerAuth: [] }],
         requestBody: {
@@ -665,6 +673,7 @@ export const openapiSpec = {
         },
         responses: {
           "201": { description: "Sala creada", content: json({ data: salaEjemplo }) },
+          "200": { description: "Reintento de la misma solicitud: la sala que ya se había creado", content: json({ data: salaEjemplo }) },
           "400": errorNombreSala,
           "401": R.error401,
           "404": {
@@ -674,7 +683,20 @@ export const openapiSpec = {
               "#/components/schemas/Error"
             ),
           },
-          "503": R.error503,
+          "409": {
+            description: "Se reutilizó un solicitudId con otro nombre",
+            content: json(
+              errorEjemplo("ROOM_REQUEST_CONFLICT", "No pudimos reutilizar la solicitud de creación."),
+              "#/components/schemas/Error"
+            ),
+          },
+          "503": {
+            description: "Firestore no respondió (DB_UNAVAILABLE) o no se encontró un ID libre (ROOM_CODE_UNAVAILABLE)",
+            content: json(
+              errorEjemplo("ROOM_CODE_UNAVAILABLE", "No encontramos un código disponible. Inténtalo de nuevo."),
+              "#/components/schemas/Error"
+            ),
+          },
         },
       },
       get: {
@@ -712,7 +734,7 @@ export const openapiSpec = {
       get: {
         summary: "Ver una sala por su ID",
         description:
-          "Para entrar a la sala. Cualquier usuario con sesión que tenga el ID puede verla; `rol` indica si es anfitrión o invitado.",
+          "Datos de una sala del panel. Solo la ve su anfitrión: si la sala es de otra persona responde 404, igual que si no existiera. (Los invitados entrarán por el servidor de tiempo real en el Sprint 3.)",
         tags: ["Salas"],
         security: [{ bearerAuth: [] }],
         responses: {
@@ -730,7 +752,7 @@ export const openapiSpec = {
         security: [{ bearerAuth: [] }],
         requestBody: {
           required: true,
-          content: { "application/json": { schema: { $ref: "#/components/schemas/SalaEntrada" } } },
+          content: { "application/json": { schema: { $ref: "#/components/schemas/SalaRenombrar" } } },
         },
         responses: {
           "200": {

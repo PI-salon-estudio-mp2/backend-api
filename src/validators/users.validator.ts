@@ -180,7 +180,8 @@ export function validarEdicionPerfil(body: unknown, avatarActual: string): Cambi
   }
   if ("avatar" in c) {
     const valor = texto(c.avatar).trim();
-    const mensaje = valor === avatarActual && valor ? undefined : errorDeAvatar(valor);
+    // "" = avatar por defecto (iniciales). También se puede conservar la foto actual de Google.
+    const mensaje = valor === "" || valor === avatarActual ? undefined : errorDeAvatar(valor);
     if (mensaje) fields.avatar = mensaje;
     else cambios.avatar = valor;
   }
