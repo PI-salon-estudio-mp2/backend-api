@@ -22,6 +22,13 @@ const R = {
       "#/components/schemas/Error"
     ),
   },
+  error403: {
+    description: "El :uid de la URL no es el de quien inició sesión: no se modifica nada",
+    content: json(
+      errorEjemplo("FORBIDDEN", "No tienes permiso para ver ni modificar los datos de otro usuario."),
+      "#/components/schemas/Error"
+    ),
+  },
   error503: {
     description: "Firestore no está disponible",
     content: json(
@@ -55,7 +62,7 @@ export const openapiSpec = {
     title: "API Salón de Estudio Colaborativo",
     version: "1.0.0",
     description: [
-      "backend-api — Sprint 0 (TS-00) y Sprint 1 (TS-01, US-01, US-02, US-03).",
+      "backend-api — Sprint 0 (TS-00), Sprint 1 (TS-01, US-01, US-02, US-03) y Sprint 2 (US-04, US-05, US-06).",
       "",
       "**Rutas privadas:** envían el ID token de Firebase en `Authorization: Bearer <token>`.",
       "Para probarlas aquí: inicia sesión en la aplicación publicada, abre DevTools → Red,",
@@ -70,7 +77,7 @@ export const openapiSpec = {
     { name: "Sistema" },
     { name: "Base técnica", description: "TS-00 (Sprint 0)" },
     { name: "Autenticación", description: "TS-01 · US-01 (Sprint 1)" },
-    { name: "Usuarios", description: "TS-01 · US-02 · US-03 (Sprint 1)" },
+    { name: "Usuarios", description: "TS-01 · US-02 · US-03 (Sprint 1) · US-04 (Sprint 2)" },
   ],
   components: {
     securitySchemes: {
@@ -122,6 +129,34 @@ export const openapiSpec = {
             minLength: 8,
             description: "Mínimo 8 caracteres, con al menos una letra y un número",
             example: "Estudio2026",
+          },
+        },
+      },
+      PerfilEdicion: {
+        type: "object",
+        description:
+          "Envía solo los campos que cambian (al menos uno). Los que no se envían quedan como están.",
+        properties: {
+          nombres: { type: "string", maxLength: 60, example: "Daniel Andrés" },
+          apellidos: { type: "string", maxLength: 60, example: "Micolta Góngora" },
+          username: {
+            type: "string",
+            pattern: "^[a-z0-9_]{3,20}$",
+            description: "Único. Al cambiarlo se libera el anterior",
+            example: "daniel_mg2",
+          },
+          avatar: {
+            type: "string",
+            description:
+              "azul, verde, ocre, morado, turquesa o rosado. En cuentas de Google también se acepta la foto actual",
+            example: "morado",
+          },
+          correo: {
+            type: "string",
+            format: "email",
+            description:
+              "Único. Solo en cuentas con correo y contraseña (en Google responde 400). Tras cambiarlo, el frontend debe refrescar el token",
+            example: "daniel.nuevo@correo.com",
           },
         },
       },
@@ -309,6 +344,126 @@ export const openapiSpec = {
             ),
           },
           "503": R.error503,
+        },
+      },
+      patch: {
+        summary: "Editar el perfil propio (US-04)",
+        description: [
+          "Actualiza nombres, apellidos, avatar, username y/o correo. Todo se valida en el servidor.",
+          "**Username:** se reserva el nuevo y se libera el anterior en una transacción de Firestore; si ya lo usa otra persona responde 409 USERNAME_TAKEN.",
+          "**Correo:** se cambia en Firebase Authentication, que garantiza que sea único; si ya existe responde 409 EMAIL_TAKEN.",
+          "Si Firestore falla después de cambiar el correo, el correo anterior se restaura.",
+        ].join(" "),
+        tags: ["Usuarios"],
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: { "application/json": { schema: { $ref: "#/components/schemas/PerfilEdicion" } } },
+        },
+        responses: {
+          "200": {
+            description: "Perfil actualizado (devuelve el perfil completo)",
+            content: json({ data: { ...perfilEjemplo, username: "daniel_mg2", avatar: "morado" } }),
+          },
+          "400": {
+            description: "Datos inválidos, ningún dato para cambiar o correo de una cuenta de Google",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/Error" },
+                examples: {
+                  VALIDATION_ERROR: {
+                    value: errorEjemplo("VALIDATION_ERROR", "Revisa los datos del formulario e inténtalo de nuevo.", {
+                      nombres: "Escribe tus nombres.",
+                      username:
+                        "Nombre de usuario no válido. Entre 3 y 20 caracteres: letras minúsculas, números o guion bajo (_). Sin espacios.",
+                    }),
+                  },
+                  SIN_CAMBIOS: {
+                    value: errorEjemplo(
+                      "VALIDATION_ERROR",
+                      "Envía al menos un dato para actualizar: nombres, apellidos, username, avatar o correo."
+                    ),
+                  },
+                  CORREO_GOOGLE: {
+                    value: errorEjemplo("VALIDATION_ERROR", "Revisa los datos del formulario e inténtalo de nuevo.", {
+                      correo:
+                        "El correo de una cuenta de Google no se puede cambiar aquí: se administra desde tu cuenta de Google.",
+                    }),
+                  },
+                },
+              },
+            },
+          },
+          "401": R.error401,
+          "404": {
+            description: "La cuenta aún no tiene perfil (Google sin username)",
+            content: json(
+              errorEjemplo(
+                "PROFILE_INCOMPLETE",
+                "Falta elegir tu nombre de usuario para terminar de crear la cuenta."
+              ),
+              "#/components/schemas/Error"
+            ),
+          },
+          "409": {
+            description: "Username (USERNAME_TAKEN) o correo (EMAIL_TAKEN) ya usados por otra persona",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/Error" },
+                examples: {
+                  USERNAME_TAKEN: { value: usernameOcupado },
+                  EMAIL_TAKEN: {
+                    value: errorEjemplo(
+                      "EMAIL_TAKEN",
+                      "Ese correo ya tiene una cuenta. Inicia sesión o usa otro correo.",
+                      { correo: "Ese correo ya tiene una cuenta. Inicia sesión o usa otro correo." }
+                    ),
+                  },
+                },
+              },
+            },
+          },
+          "503": R.error503,
+        },
+      },
+    },
+    "/api/users/{uid}": {
+      parameters: [
+        {
+          name: "uid",
+          in: "path",
+          required: true,
+          schema: { type: "string" },
+          description: "Debe ser el uid de quien inició sesión; otro uid responde 403",
+        },
+      ],
+      get: {
+        summary: "Perfil por uid (solo el propio)",
+        description:
+          "Igual que GET /api/users/me, pero con el uid en la URL. Sirve para comprobar que nadie puede leer el perfil de otro usuario: si el uid no es el del token, responde 403 FORBIDDEN.",
+        tags: ["Usuarios"],
+        security: [{ bearerAuth: [] }],
+        responses: {
+          "200": { description: "Perfil del usuario", content: json({ data: perfilEjemplo }) },
+          "401": R.error401,
+          "403": R.error403,
+          "503": R.error503,
+        },
+      },
+      patch: {
+        summary: "Editar perfil por uid (solo el propio)",
+        description:
+          "Igual que PATCH /api/users/me. Si el uid no es el del token, responde 403 FORBIDDEN y no se modifica nada.",
+        tags: ["Usuarios"],
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: { "application/json": { schema: { $ref: "#/components/schemas/PerfilEdicion" } } },
+        },
+        responses: {
+          "200": { description: "Perfil actualizado", content: json({ data: perfilEjemplo }) },
+          "401": R.error401,
+          "403": R.error403,
         },
       },
     },

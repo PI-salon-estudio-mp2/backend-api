@@ -1,7 +1,9 @@
 import { auth } from "../config/firebase";
 import type { UsuarioAutenticado } from "../middlewares/auth.middleware";
 import {
+  actualizarPerfil,
   buscarPerfil,
+  buscarPerfilGuardado,
   crearPerfil,
   Perfil,
   Proveedor,
@@ -15,6 +17,7 @@ import {
   MENSAJE_FORMULARIO,
   MENSAJES,
   normalizarUsername,
+  validarEdicionPerfil,
   validarRegistro,
   validarUsername,
 } from "../validators/users.validator";
@@ -34,6 +37,13 @@ const correoOcupado = () =>
 
 const baseDeDatosNoDisponible = () => new AppError(503, MENSAJE_DB, "DB_UNAVAILABLE");
 
+const perfilIncompleto = () =>
+  new AppError(
+    404,
+    "Falta elegir tu nombre de usuario para terminar de crear la cuenta.",
+    "PROFILE_INCOMPLETE"
+  );
+
 /** Ejecuta una operación de Firestore y convierte cualquier fallo en 503 DB_UNAVAILABLE. */
 async function enBaseDeDatos<T>(operacion: string, fn: () => Promise<T>): Promise<T> {
   try {
@@ -52,8 +62,11 @@ function codigoFirebase(error: unknown): string {
   return "";
 }
 
-/** Traduce los errores de createUser a respuestas claras en español. */
-function traducirErrorAlCrearCuenta(error: unknown): AppError {
+/** Traduce los errores de createUser / updateUser a respuestas claras en español. */
+function traducirErrorDeAuth(
+  error: unknown,
+  mensaje503 = "No pudimos crear la cuenta en este momento. Inténtalo de nuevo en unos segundos."
+): AppError {
   switch (codigoFirebase(error)) {
     case "auth/email-already-exists":
       return correoOcupado();
@@ -66,12 +79,8 @@ function traducirErrorAlCrearCuenta(error: unknown): AppError {
         contrasena: MENSAJES.contrasenaDebil,
       });
     default:
-      console.error("Error de Firebase Authentication al crear la cuenta:", error);
-      return new AppError(
-        503,
-        "No pudimos crear la cuenta en este momento. Inténtalo de nuevo en unos segundos.",
-        "AUTH_UNAVAILABLE"
-      );
+      console.error("Error de Firebase Authentication:", error);
+      return new AppError(503, mensaje503, "AUTH_UNAVAILABLE");
   }
 }
 
@@ -105,7 +114,7 @@ export async function registrarUsuario(body: unknown): Promise<{ uid: string }> 
     });
     uid = cuenta.uid;
   } catch (error) {
-    throw traducirErrorAlCrearCuenta(error);
+    throw traducirErrorDeAuth(error);
   }
 
   const perfil: Perfil = {
@@ -138,13 +147,7 @@ export async function registrarUsuario(body: unknown): Promise<{ uid: string }> 
 /** US-03 · Perfil de quien inició sesión. 404 PROFILE_INCOMPLETE si aún no eligió username. */
 export async function obtenerPerfil(uid: string): Promise<Perfil> {
   const perfil = await enBaseDeDatos("leer perfil", () => buscarPerfil(uid));
-  if (!perfil) {
-    throw new AppError(
-      404,
-      "Falta elegir tu nombre de usuario para terminar de crear la cuenta.",
-      "PROFILE_INCOMPLETE"
-    );
-  }
+  if (!perfil) throw perfilIncompleto();
   return perfil;
 }
 
@@ -210,4 +213,73 @@ export async function consultarUsername(
   return ocupado
     ? { username, disponible: false, motivo: MENSAJE_USERNAME_OCUPADO }
     : { username, disponible: true };
+}
+
+/**
+ * US-04 · Editar perfil. Se valida TODO en el servidor:
+ * 1) formato de los campos enviados,
+ * 2) username: revisión rápida y luego reserva definitiva en una transacción (libera el anterior),
+ * 3) correo (solo cuentas con contraseña): se cambia primero en Firebase Authentication,
+ *    que garantiza que sea único; si después falla Firestore, se devuelve el correo anterior.
+ */
+export async function editarPerfil(usuario: UsuarioAutenticado, body: unknown): Promise<Perfil> {
+  const guardado = await enBaseDeDatos("leer perfil", () => buscarPerfilGuardado(usuario.uid));
+  if (!guardado) throw perfilIncompleto();
+
+  const cambios = validarEdicionPerfil(body, guardado.avatar);
+
+  const correoNuevo =
+    cambios.correo !== undefined && cambios.correo !== guardado.correo ? cambios.correo : undefined;
+  if (!correoNuevo) delete cambios.correo;
+  if (correoNuevo && guardado.proveedor === "google") {
+    throw new AppError(400, MENSAJE_FORMULARIO, "VALIDATION_ERROR", {
+      correo: MENSAJES.correoGoogle,
+    });
+  }
+
+  const usernameNuevo = cambios.username;
+  if (usernameNuevo !== undefined && usernameNuevo !== guardado.username) {
+    const ocupado = await enBaseDeDatos("revisar username", () => usernameExiste(usernameNuevo));
+    if (ocupado) throw usernameOcupado();
+  }
+
+  if (correoNuevo) {
+    try {
+      await auth.updateUser(usuario.uid, { email: correoNuevo });
+    } catch (error) {
+      throw traducirErrorDeAuth(
+        error,
+        "No pudimos cambiar tu correo en este momento. Inténtalo de nuevo en unos segundos."
+      );
+    }
+  }
+
+  /** Si Firestore no guardó los cambios, el correo de Auth vuelve a ser el anterior. */
+  const revertirCorreo = async () => {
+    if (!correoNuevo) return;
+    try {
+      await auth.updateUser(usuario.uid, { email: guardado.correo });
+    } catch (error) {
+      console.error(`No se pudo devolver el correo anterior de ${usuario.uid}:`, error);
+    }
+  };
+
+  let resultado;
+  try {
+    resultado = await actualizarPerfil(usuario.uid, cambios);
+  } catch (error) {
+    console.error("Error de Firestore (editar perfil):", error);
+    await revertirCorreo();
+    throw baseDeDatosNoDisponible();
+  }
+
+  if (resultado.resultado === "username-ocupado") {
+    await revertirCorreo();
+    throw usernameOcupado();
+  }
+  if (resultado.resultado === "sin-perfil") {
+    await revertirCorreo();
+    throw perfilIncompleto();
+  }
+  return resultado.perfil;
 }
