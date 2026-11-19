@@ -94,3 +94,38 @@ export async function renombrarSala(id: string, nombre: string): Promise<void> {
 export async function eliminarSala(id: string): Promise<void> {
   await db.recursiveDelete(salas().doc(id));
 }
+
+/** US-05 · IDs de las salas que creó el usuario. */
+export async function idsSalasDe(anfitrionUid: string): Promise<string[]> {
+  const snapshot = await salas().where("anfitrionUid", "==", anfitrionUid).select().get();
+  return snapshot.docs.map((doc) => doc.id);
+}
+
+/** US-05 · IDs de las salas de otros en las que el usuario es miembro. */
+export async function idsSalasDondeEsInvitado(uid: string): Promise<string[]> {
+  const snapshot = await salas().where("miembros", "array-contains", uid).select("anfitrionUid").get();
+  return snapshot.docs.filter((doc) => doc.get("anfitrionUid") !== uid).map((doc) => doc.id);
+}
+
+export const AUTOR_ELIMINADO = "Usuario eliminado";
+
+/**
+ * US-05 · En una sala ajena: saca al usuario de `miembros` y deja sus mensajes como
+ * «Usuario eliminado» (sin uid). La conversación de los demás se conserva y no quedan
+ * referencias a una cuenta que ya no existe.
+ */
+export async function sacarDeSalaYAnonimizar(salaId: string, uid: string): Promise<number> {
+  const refSala = salas().doc(salaId);
+  const mensajes = await refSala.collection("messages").where("autorUid", "==", uid).get();
+
+  const escritor = db.bulkWriter(); // agrupa las escrituras (más de 500 si hace falta)
+  for (const doc of mensajes.docs) {
+    escritor.update(doc.ref, { autorUid: null, autorUsername: AUTOR_ELIMINADO, autorEliminado: true });
+  }
+  escritor.update(refSala, {
+    miembros: FieldValue.arrayRemove(uid),
+    actualizadoEn: FieldValue.serverTimestamp(),
+  });
+  await escritor.close();
+  return mensajes.size;
+}

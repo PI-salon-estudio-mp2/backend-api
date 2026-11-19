@@ -1,7 +1,14 @@
 import { auth } from "../config/firebase";
 import type { UsuarioAutenticado } from "../middlewares/auth.middleware";
 import {
+  eliminarSala,
+  idsSalasDe,
+  idsSalasDondeEsInvitado,
+  sacarDeSalaYAnonimizar,
+} from "../repositories/rooms.repository";
+import {
   actualizarPerfil,
+  borrarPerfilYUsername,
   buscarPerfil,
   buscarPerfilGuardado,
   crearPerfil,
@@ -282,4 +289,64 @@ export async function editarPerfil(usuario: UsuarioAutenticado, body: unknown): 
     throw perfilIncompleto();
   }
   return resultado.perfil;
+}
+
+export interface ResumenEliminacion {
+  uid: string;
+  usernameLiberado: string | null;
+  salasEliminadas: number;
+  salasAbandonadas: number;
+  mensajesAnonimizados: number;
+}
+
+/**
+ * US-05 · Eliminar cuenta. Política de datos acordada por el equipo:
+ * 1) Las salas que creó el usuario se borran con TODOS sus mensajes.
+ * 2) En salas de otros: sale de `miembros` y sus mensajes quedan como «Usuario eliminado».
+ * 3) Se borra su perfil (`users/{uid}`) y se libera su username (`usernames/{username}`).
+ * 4) Por último se borra la cuenta de Firebase Authentication.
+ * Firestore va primero: si algo falla, la cuenta sigue existiendo y el usuario puede
+ * reintentar (todos los pasos se pueden repetir sin problema). Así nunca quedan datos
+ * huérfanos de una cuenta que ya no existe.
+ */
+export async function eliminarCuenta(uid: string): Promise<ResumenEliminacion> {
+  const propias = await enBaseDeDatos("buscar salas propias", () => idsSalasDe(uid));
+  for (const salaId of propias) {
+    await enBaseDeDatos("eliminar sala", () => eliminarSala(salaId));
+  }
+
+  const ajenas = await enBaseDeDatos("buscar salas como invitado", () => idsSalasDondeEsInvitado(uid));
+  let mensajesAnonimizados = 0;
+  for (const salaId of ajenas) {
+    mensajesAnonimizados += await enBaseDeDatos("anonimizar mensajes", () =>
+      sacarDeSalaYAnonimizar(salaId, uid)
+    );
+  }
+
+  const usernameLiberado = await enBaseDeDatos("borrar perfil", () => borrarPerfilYUsername(uid));
+
+  try {
+    await auth.deleteUser(uid);
+  } catch (error) {
+    // Si la cuenta ya no existía en Authentication, el resultado es el mismo.
+    if (codigoFirebase(error) !== "auth/user-not-found") {
+      console.error(`No se pudo borrar la cuenta ${uid} de Firebase Authentication:`, error);
+      throw new AppError(
+        503,
+        "Borramos tus datos, pero no pudimos cerrar tu cuenta. Inténtalo de nuevo en unos segundos.",
+        "AUTH_UNAVAILABLE"
+      );
+    }
+  }
+
+  console.log(
+    `Cuenta eliminada (US-05): ${propias.length} salas borradas, ${ajenas.length} salas abandonadas, ${mensajesAnonimizados} mensajes anonimizados`
+  );
+  return {
+    uid,
+    usernameLiberado,
+    salasEliminadas: propias.length,
+    salasAbandonadas: ajenas.length,
+    mensajesAnonimizados,
+  };
 }
