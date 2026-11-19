@@ -96,7 +96,7 @@ Solo este servicio:
 docker compose up --build
 ```
 
-La API queda en `http://localhost:3000`. Para levantar **todo el sistema** (frontend + backend-api) usa el `docker-compose.yml` del repositorio `frontend`, con ambos repositorios clonados uno al lado del otro.
+La API queda en `http://localhost:3000`. Para levantar **todo el sistema** (frontend + backend-api + backend-realtime) usa el `docker-compose.yml` del repositorio `frontend`, con los tres repositorios clonados uno al lado del otro.
 
 ## Endpoints
 
@@ -174,19 +174,26 @@ Después de cambiar el correo, el frontend debe refrescar el token (`getIdToken(
 
 | Paso | Qué se hace | Por qué |
 |---|---|---|
-| 1 | Las salas que creó el usuario se borran con todos sus mensajes (`recursiveDelete`) | Sin anfitrión la sala no tiene quién la administre |
-| 2 | En salas de otros: sale de `miembros` y sus mensajes quedan como «Usuario eliminado» (`autorUid: null`) | Se conserva la conversación de los demás sin datos personales del usuario |
-| 3 | Se borra `users/{uid}` y se libera `usernames/{username}` en una transacción | Otra persona puede usar ese username de inmediato |
-| 4 | Se borra la cuenta de Firebase Authentication | Ya no puede iniciar sesión |
+| 1 | Las salas que creó el usuario se borran con todo su contenido, incluidos los mensajes de otras personas (`recursiveDelete`) | Sin anfitrión la sala no tiene quién la administre |
+| 2 | En salas de otros: se borran **sus** mensajes y sale de `miembros`. La sala y los mensajes de los demás se conservan | No quedan datos del usuario, y los demás no pierden su sala |
+| 3 | Se borran sus registros de `roomCreationRequests` | No quedan referencias a la cuenta |
+| 4 | Se borra `users/{uid}` y se libera `usernames/{username}` en una transacción (solo si el username es suyo) | Otra persona puede usar ese username de inmediato |
+| 5 | Se borra la cuenta de Firebase Authentication | Ya no puede iniciar sesión |
 
-Firestore va primero: si algo falla, la cuenta sigue existiendo y el usuario puede reintentar (todos los pasos se pueden repetir). Así no quedan datos huérfanos. Responde 200 con un resumen (`salasEliminadas`, `salasAbandonadas`, `mensajesAnonimizados`, `usernameLiberado`). Después el frontend cierra la sesión y lleva al Login.
+Es la misma política que anuncia el modal del frontend: «Se eliminarán las salas que creaste y todo su contenido, así como tus mensajes en otras salas».
+
+Firestore va primero: si algo falla, la cuenta sigue existiendo y el usuario puede reintentar (todos los pasos se pueden repetir). Así no quedan datos huérfanos. Responde **204 sin cuerpo** solo cuando terminó todo. Después el frontend cierra la sesión y lleva al Login. En los logs de Render queda una línea con cuántas salas y mensajes se borraron (sin datos personales).
 
 `requireAuth` verifica el token con `checkRevoked`: el token de una cuenta eliminada responde 401 aunque no haya expirado.
 
 ### Salas (US-06)
 
-- **ID único:** 8 caracteres con letras mayúsculas y números, sin los que se confunden (0, O, 1, I, L). Ejemplo: `K7P2QX9M`. El ID es también el ID del documento `rooms/{id}`; se crea con `create()`, que falla si ya existe, y en ese caso se genera otro.
-- **Nombre:** obligatorio, máximo 50 caracteres. Se recortan los espacios del inicio y del final y se unen los repetidos.
+- **ID único:** 8 caracteres con letras mayúsculas y números, sin los que se confunden (0, O, 1, I, L). Ejemplo: `K7P2QX9M`. El ID es también el ID del documento `rooms/{id}`; la transacción comprueba que no exista y, si existe, genera otro (tras 5 intentos: 503 `ROOM_CODE_UNAVAILABLE`).
+- **Ver una sala:** `GET /api/rooms/{id}` solo la muestra a su anfitrión; si es de otra persona responde 404, igual que si no existiera.
+- **Cuerpo:** `{ "nombre": "...", "solicitudId": "<UUID>" }`. El frontend genera el `solicitudId` con `crypto.randomUUID()`.
+- **Nombre:** entre 3 y 40 caracteres (las mismas reglas del frontend). Se recortan los espacios del inicio y del final y se unen los repetidos.
+- **Reintentos sin duplicados:** la solicitud se guarda en `roomCreationRequests/{uid}_{solicitudId}` en la misma transacción que la sala. Si el frontend reintenta la misma solicitud (por ejemplo, tras un timeout), responde 200 con la misma sala. Si reutiliza el `solicitudId` con otro nombre: 409 `ROOM_REQUEST_CONFLICT`.
+- **Respuesta:** `{ id, nombre, anfitrionUid, creadoEn, rol: "administrador" }`.
 - **Panel:** `GET /api/rooms` devuelve solo las salas donde `anfitrionUid` es quien inició sesión. Si no tiene, devuelve `[]`.
 - **Permisos:** cambiar el nombre o borrar la sala solo lo puede hacer el anfitrión. Cualquier otro usuario recibe 403 `FORBIDDEN` y no se modifica nada.
 - Al borrar una sala se borran también todos sus mensajes (`rooms/{id}/messages`).
@@ -197,7 +204,7 @@ Firestore va primero: si algo falla, la cuenta sigue existiendo y el usuario pue
 |---|---|
 | `nombres`, `apellidos` | Obligatorios, máximo 60 caracteres |
 | `username` | Se guarda en minúsculas; `^[a-z0-9_]{3,20}$`; único en la plataforma |
-| `avatar` | `azul`, `verde`, `ocre`, `morado`, `turquesa` o `rosado` (en Google: URL `https` de la foto) |
+| `avatar` | `azul`, `verde`, `ocre`, `morado`, `turquesa` o `rosado` (en Google: URL `https` de la foto). Al editar también se acepta `""` (avatar por defecto con iniciales) |
 | `correo` | Formato `nombre@dominio.ext`; único (lo garantiza Firebase Authentication) |
 | `contrasena` | Mínimo 8 caracteres, con al menos una letra y un número |
 
@@ -209,6 +216,7 @@ Firestore va primero: si algo falla, la cuenta sigue existiendo y el usuario pue
 | `usernames` | `{username}` | `uid, creadoEn`. Su existencia reserva el nombre de usuario |
 | `rooms` | `{id}` | `id, nombre, anfitrionUid, miembros (uids), creadoEn, actualizadoEn` |
 | `rooms/{id}/messages` | `{msgId}` | `autorUid, autorUsername, texto, creadoEn`. Los escribe `backend-realtime` |
+| `roomCreationRequests` | `{uid}_{solicitudId}` | `anfitrionUid, solicitudId, salaId, nombre, creadoEn`. Evita salas duplicadas al reintentar |
 | `config` | `base-tecnica` | `mensaje` (TS-00) |
 
 Las reglas de [`firestore.rules`](firestore.rules) niegan todo acceso desde clientes. El Admin SDK de esta API no está sujeto a ellas.
@@ -234,7 +242,9 @@ Error (`fields` solo en errores de formulario):
 | 403 | `FORBIDDEN` | Se intenta ver o modificar el perfil de otro usuario, o modificar o borrar una sala ajena |
 | 404 | `NOT_FOUND` | El documento `config/base-tecnica` no existe |
 | 404 | `PROFILE_INCOMPLETE` | La cuenta (Google) aún no eligió nombre de usuario |
-| 404 | `ROOM_NOT_FOUND` | No existe una sala con ese ID |
+| 404 | `ROOM_NOT_FOUND` | No existe una sala con ese ID o no es del usuario |
+| 409 | `ROOM_REQUEST_CONFLICT` | Se reutilizó un `solicitudId` con otro nombre de sala |
+| 503 | `ROOM_CODE_UNAVAILABLE` | No se encontró un ID de sala libre (muy poco probable) |
 | 404 | `ROUTE_NOT_FOUND` | La ruta solicitada no existe |
 | 409 | `USERNAME_TAKEN` | El nombre de usuario ya está ocupado |
 | 409 | `EMAIL_TAKEN` | El correo ya tiene una cuenta |
