@@ -6,8 +6,9 @@ import { borrarSala, crearSalaPara, editarSala, misSalas, verSala } from "../ser
 
 /** POST /api/rooms (US-06) */
 export async function crearSalaHandler(req: Request, res: Response) {
-  const data = await crearSalaPara(usuarioDe(req).uid, req.body);
-  res.status(201).json({ data });
+  const { sala, nueva } = await crearSalaPara(usuarioDe(req).uid, req.body);
+  // 201 si se creó ahora; 200 si era un reintento de la misma solicitud (misma sala).
+  res.status(nueva ? 201 : 200).json({ data: sala });
 }
 
 /** GET /api/rooms (US-06): solo las salas del usuario */

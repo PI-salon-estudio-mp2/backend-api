@@ -35,8 +35,11 @@ export async function editarPerfilHandler(req: Request, res: Response) {
   res.json({ data });
 }
 
-/** DELETE /api/users/me (privado, US-05). Después el frontend cierra la sesión y va al Login. */
+/**
+ * DELETE /api/users/me (privado, US-05). Responde 204 sin cuerpo SOLO cuando terminó
+ * todo el borrado (Firestore y Authentication). Después el frontend cierra la sesión.
+ */
 export async function eliminarCuentaHandler(req: Request, res: Response) {
-  const data = await eliminarCuenta(usuarioDe(req).uid);
-  res.json({ data });
+  await eliminarCuenta(usuarioDe(req).uid);
+  res.status(204).end();
 }

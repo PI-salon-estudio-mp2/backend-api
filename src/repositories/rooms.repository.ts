@@ -5,11 +5,14 @@ import { ALFABETO_ID_SALA, LARGO_ID_SALA } from "../validators/rooms.validator";
 
 /**
  * Modelo en Firestore (TS-02):
- *   rooms/{id}                     { id, nombre, anfitrionUid, miembros: [uid], creadoEn, actualizadoEn }
- *   rooms/{id}/messages/{msgId}    { autorUid, autorUsername, texto, creadoEn }   ← lo escribe backend-realtime
+ *   rooms/{id}                         { id, nombre, anfitrionUid, miembros: [uid], creadoEn, actualizadoEn }
+ *   rooms/{id}/messages/{msgId}        { autorUid, autorUsername, texto, creadoEn }   ← lo escribe backend-realtime
+ *   roomCreationRequests/{uid_solId}   { anfitrionUid, solicitudId, salaId, nombre, creadoEn }
  *
- * El ID del documento ES el ID de la sala (8 caracteres), así es único por construcción:
- * se crea con create(), que falla si el documento ya existe, y se reintenta con otro ID.
+ * El ID del documento ES el ID de la sala (8 caracteres): la transacción comprueba que no
+ * exista antes de crearla, así que es único por construcción.
+ * roomCreationRequests hace que crear sea idempotente: si el frontend reintenta la misma
+ * solicitud (por ejemplo, tras un timeout), se devuelve la sala ya creada en vez de duplicarla.
  */
 
 export interface Sala {
@@ -19,11 +22,16 @@ export interface Sala {
   creadoEn: string; // ISO 8601
 }
 
+export type ResultadoCreacionSala =
+  | { tipo: "creada"; sala: Sala }
+  | { tipo: "existente"; sala: Sala }
+  | { tipo: "conflicto" }
+  | { tipo: "sin-id" };
+
 const salas = () => db.collection("rooms");
+const solicitudes = () => db.collection("roomCreationRequests");
 
 const INTENTOS_ID = 5;
-/** Código gRPC ALREADY_EXISTS que devuelve create() si el documento ya existe. */
-const YA_EXISTE = 6;
 
 export function generarIdSala(): string {
   let id = "";
@@ -44,31 +52,54 @@ function aSala(id: string, data: Record<string, unknown>): Sala {
   };
 }
 
-function esYaExiste(error: unknown): boolean {
-  return typeof error === "object" && error !== null && (error as { code?: unknown }).code === YA_EXISTE;
-}
+/**
+ * Crea la sala con un ID único en UNA transacción, junto con el registro de la solicitud.
+ * Si la misma solicitud ya se había procesado, devuelve la sala existente (o «conflicto»
+ * si el nombre no coincide o la sala ya no existe).
+ */
+export async function crearSala(
+  nombre: string,
+  anfitrionUid: string,
+  solicitudId: string
+): Promise<ResultadoCreacionSala> {
+  const refSolicitud = solicitudes().doc(`${anfitrionUid}_${solicitudId}`);
 
-/** Crea la sala con un ID único. El anfitrión queda como primer miembro. */
-export async function crearSala(nombre: string, anfitrionUid: string): Promise<Sala> {
   for (let intento = 1; intento <= INTENTOS_ID; intento++) {
     const id = generarIdSala();
-    const ahora = Timestamp.now();
-    try {
-      await salas().doc(id).create({
-        id,
-        nombre,
-        anfitrionUid,
-        miembros: [anfitrionUid],
-        creadoEn: ahora,
-        actualizadoEn: ahora,
-      });
-      return { id, nombre, anfitrionUid, creadoEn: ahora.toDate().toISOString() };
-    } catch (error) {
-      if (!esYaExiste(error)) throw error;
-      // Ese ID ya estaba tomado (muy poco probable): se intenta con otro.
-    }
+    const refSala = salas().doc(id);
+
+    const resultado = await db.runTransaction(
+      async (tx): Promise<ResultadoCreacionSala | { tipo: "id-ocupado" }> => {
+        const [snapSolicitud, snapSala] = await tx.getAll(refSolicitud, refSala);
+
+        if (snapSolicitud.exists) {
+          const salaId = String(snapSolicitud.get("salaId") ?? "");
+          if (snapSolicitud.get("nombre") !== nombre || !salaId) return { tipo: "conflicto" };
+          const snapAnterior = await tx.get(salas().doc(salaId));
+          if (!snapAnterior.exists) return { tipo: "conflicto" };
+          return { tipo: "existente", sala: aSala(snapAnterior.id, snapAnterior.data() ?? {}) };
+        }
+
+        if (snapSala.exists) return { tipo: "id-ocupado" };
+
+        const ahora = Timestamp.now();
+        tx.create(refSala, {
+          id,
+          nombre,
+          anfitrionUid,
+          miembros: [anfitrionUid],
+          creadoEn: ahora,
+          actualizadoEn: ahora,
+        });
+        tx.create(refSolicitud, { anfitrionUid, solicitudId, salaId: id, nombre, creadoEn: ahora });
+        return { tipo: "creada", sala: { id, nombre, anfitrionUid, creadoEn: ahora.toDate().toISOString() } };
+      }
+    );
+
+    if (resultado.tipo !== "id-ocupado") return resultado;
+    // Ese ID ya estaba tomado (muy poco probable): se intenta con otro.
   }
-  throw new Error(`No se encontró un ID libre para la sala tras ${INTENTOS_ID} intentos`);
+  return { tipo: "sin-id" };
 }
 
 /** Solo las salas que creó este usuario, de la más nueva a la más vieja. */
@@ -107,25 +138,29 @@ export async function idsSalasDondeEsInvitado(uid: string): Promise<string[]> {
   return snapshot.docs.filter((doc) => doc.get("anfitrionUid") !== uid).map((doc) => doc.id);
 }
 
-export const AUTOR_ELIMINADO = "Usuario eliminado";
-
 /**
- * US-05 · En una sala ajena: saca al usuario de `miembros` y deja sus mensajes como
- * «Usuario eliminado» (sin uid). La conversación de los demás se conserva y no quedan
- * referencias a una cuenta que ya no existe.
+ * US-05 · En una sala ajena: borra los mensajes del usuario y lo saca de `miembros`.
+ * La sala y los mensajes de las demás personas se conservan.
  */
-export async function sacarDeSalaYAnonimizar(salaId: string, uid: string): Promise<number> {
+export async function sacarDeSalaYBorrarMensajes(salaId: string, uid: string): Promise<number> {
   const refSala = salas().doc(salaId);
-  const mensajes = await refSala.collection("messages").where("autorUid", "==", uid).get();
+  const mensajes = await refSala.collection("messages").where("autorUid", "==", uid).select().get();
 
   const escritor = db.bulkWriter(); // agrupa las escrituras (más de 500 si hace falta)
-  for (const doc of mensajes.docs) {
-    escritor.update(doc.ref, { autorUid: null, autorUsername: AUTOR_ELIMINADO, autorEliminado: true });
-  }
+  for (const doc of mensajes.docs) escritor.delete(doc.ref);
   escritor.update(refSala, {
     miembros: FieldValue.arrayRemove(uid),
     actualizadoEn: FieldValue.serverTimestamp(),
   });
   await escritor.close();
   return mensajes.size;
+}
+
+/** US-05 · Borra los registros de solicitudes de creación de salas del usuario. */
+export async function borrarSolicitudesDe(anfitrionUid: string): Promise<number> {
+  const snapshot = await solicitudes().where("anfitrionUid", "==", anfitrionUid).select().get();
+  const escritor = db.bulkWriter();
+  for (const doc of snapshot.docs) escritor.delete(doc.ref);
+  await escritor.close();
+  return snapshot.size;
 }
