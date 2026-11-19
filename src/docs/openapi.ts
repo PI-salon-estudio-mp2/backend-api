@@ -214,7 +214,7 @@ export const openapiSpec = {
             type: "string",
             format: "email",
             description:
-              "Único. Solo en cuentas con correo y contraseña (en Google responde 400). Tras cambiarlo, el frontend debe refrescar el token",
+              "Único. Solo en cuentas con correo y contraseña (en Google responde 400). Al cambiarlo, Firebase cierra las sesiones de la cuenta: hay que iniciar sesión de nuevo con el correo nuevo",
             example: "daniel.nuevo@correo.com",
           },
         },

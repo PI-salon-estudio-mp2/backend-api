@@ -166,7 +166,7 @@ Pasos en el servidor:
 4. Si Firestore falla después de cambiar el correo, se restaura el correo anterior en Authentication.
 5. Responde 200 con el perfil completo actualizado.
 
-Después de cambiar el correo, el frontend debe refrescar el token (`getIdToken(true)`) para que traiga el correo nuevo.
+**Al cambiar el correo, Firebase cierra todas las sesiones de esa cuenta por seguridad** (revoca los tokens). La API responde 200 con el perfil actualizado, pero la siguiente petición con el token anterior recibe 401: el frontend debe pedir que se inicie sesión de nuevo con el correo nuevo.
 
 ### Eliminar cuenta (US-05) · política de datos
 
