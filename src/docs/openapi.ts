@@ -115,7 +115,7 @@ export const openapiSpec = {
     title: "API Salón de Estudio Colaborativo",
     version: "1.0.0",
     description: [
-      "backend-api — Sprint 0 (TS-00), Sprint 1 (TS-01, US-01, US-02, US-03) y Sprint 2 (US-04, US-05, US-06).",
+      "backend-api — Sprint 0 (TS-00), Sprint 1 (TS-01, US-01, US-02, US-03), Sprint 2 (US-04, US-05, US-06) y Sprint 3 (US-07).",
       "",
       "**Rutas privadas:** envían el ID token de Firebase en `Authorization: Bearer <token>`.",
       "Si la cuenta fue eliminada, su token deja de servir (401).",
@@ -124,6 +124,25 @@ export const openapiSpec = {
       "sin la palabra `Bearer` y pégalo en **Authorize**. El token dura 1 hora.",
       "",
       "**Formato:** éxito `{ \"data\": ... }` · error `{ \"error\": { \"code\", \"message\", \"fields\"? } }`.",
+      "",
+      "### Chat en tiempo real (Socket.IO · backend-realtime)",
+      "",
+      "El chat no usa esta API: va por Socket.IO en **https://backend-realtime-s7sh.onrender.com**, con el mismo ID token",
+      "(`io(URL, { auth: { token } })`). Cada mensaje lo guarda el servidor en `rooms/{id}/messages`.",
+      "Detalle completo: [docs/eventos-tiempo-real.md](https://github.com/PI-salon-estudio-mp2/backend-realtime/blob/main/docs/eventos-tiempo-real.md).",
+      "",
+      "| Evento | Dirección | Datos que envía | Quién lo recibe / respuesta |",
+      "|---|---|---|---|",
+      "| `room:join` | cliente → servidor | `{ roomId }` | Responde la sala, los presentes, los últimos 50 mensajes y `hayMasHistorial` |",
+      "| `room:leave` | cliente → servidor | `{ roomId }` | Responde `{ salaId }` |",
+      "| `message:send` | cliente → servidor | `{ roomId, texto }` | Responde el mensaje guardado |",
+      "| `history:before` | cliente → servidor | `{ roomId, antesDe, limite }` | Responde `{ mensajes, hayMas }`: los 50 anteriores, del más viejo al más nuevo |",
+      "| `room:closed` | cliente → servidor | `{ roomId }` (después de `DELETE /api/rooms/{id}`) | Responde `{ salaId }`; error `ROOM_STILL_EXISTS` si la sala sigue existiendo |",
+      "| `message:new` | servidor → sala | `{ id, salaId, autorUid, autorUsername, texto, creadoEn }` | Solo los conectados a **esa** sala |",
+      "| `presence:update` | servidor → sala | `{ salaId, presentes: [{ uid, username, avatar }] }` | Solo los conectados a esa sala |",
+      "| `room:deleted` | servidor → sala | `{ salaId }` | Todos los que estaban en la sala eliminada (quedan fuera de ella) |",
+      "",
+      "**Reconexión:** Socket.IO reintenta solo y, al volver, el frontend emite otra vez `room:join`.",
     ].join("\n"),
   },
   servers: [{ url: "/" }],
@@ -135,7 +154,7 @@ export const openapiSpec = {
     {
       name: "Salas",
       description:
-        "US-06 · TS-02 (Sprint 2). El ID de la sala es único: 8 caracteres en mayúsculas y números, sin 0, O, 1, I ni L.",
+        "US-06 · TS-02 (Sprint 2) · US-07 (Sprint 3). El ID de la sala es único: 8 caracteres en mayúsculas y números, sin 0, O, 1, I ni L. Solo el anfitrión puede editar o eliminar la sala (otro usuario → 403).",
     },
   ],
   components: {
@@ -734,7 +753,7 @@ export const openapiSpec = {
       get: {
         summary: "Ver una sala por su ID",
         description:
-          "Datos de una sala del panel. Solo la ve su anfitrión: si la sala es de otra persona responde 404, igual que si no existiera. (Los invitados entrarán por el servidor de tiempo real en el Sprint 3.)",
+          "Datos de una sala del panel. Solo la ve su anfitrión: si la sala es de otra persona responde 404, igual que si no existiera. Los invitados entran a la sala por el servidor de tiempo real (`room:join`).",
         tags: ["Salas"],
         security: [{ bearerAuth: [] }],
         responses: {
@@ -769,7 +788,7 @@ export const openapiSpec = {
       delete: {
         summary: "Eliminar la sala y sus mensajes (solo anfitrión)",
         description:
-          "Borra `rooms/{id}` y toda su subcolección `messages` (sin datos huérfanos). Si quien llama no es el anfitrión responde 403 FORBIDDEN y no se borra nada.",
+          "Borra `rooms/{id}` y toda su subcolección `messages` (sin datos huérfanos). Si quien llama no es el anfitrión responde 403 FORBIDDEN y no se borra nada. Después del 204, el frontend emite `room:closed` al servidor de tiempo real y todos los participantes conectados reciben `room:deleted` (US-07).",
         tags: ["Salas"],
         security: [{ bearerAuth: [] }],
         responses: {
